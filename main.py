@@ -1,132 +1,163 @@
 import numpy as np
 
+import numpy as np
 
-def monte_carlo_simulation(burn_rate, total_stories, stories_with_estimates, defect_points_per_story_point,
-                           fat_story_percentage, average_story_points_for_estimated_stories,
-                           average_points_for_stories_wo_estimates, dependency_delay_factor,
-                           fat_story_multiplier, planned_days_off, num_engineers, unplanned_off_probability,
-                           disruption_probability, average_disruption_delay, num_simulations=10000):
-    """
-    Monte Carlo simulation to predict the delivery date and defects using numpy.
 
-    Args:
-    - burn_rate (float): Average story points completed per day.
-    - total_stories (int): Total number of stories in the project.
-    - stories_with_estimates (int): Number of stories that have point estimates.
-    - defect_points_per_story_point (float): Expected defects per story point.
-    - fat_story_percentage (float): Percentage of stories that are 'fat'.
-    - average_story_points_for_estimated_stories (float): Average story points for stories with estimates.
-    - average_points_for_stories_wo_estimates (float): Average story points for stories without estimates.
-    - dependency_delay_factor (float): Expected delay due to dependencies.
-    - fat_story_multiplier (int): Multiplier for fat stories.
-    - planned_days_off (int): Total number of planned days off across all engineers.
-    - num_engineers (int): Total number of engineers in the team.
-    - unplanned_off_probability (float): Probability of an engineer taking an unplanned day off.
-    - disruption_probability (float): Probability of a disruption occurring.
-    - average_disruption_delay (float): Average delay in weeks introduced by a disruption.
-    - num_simulations (int, optional): Number of simulations to run. Defaults to 10,000.
+def monte_carlo_simulation(burn_rate, total_stories, stories_with_estimates,
+                           story_points_for_estimated_stories, num_engineers, num_simulations, simulations):
+    def calculate_initial_story_points():
+        avg_story_points = story_points_for_estimated_stories / stories_with_estimates
+        estimated_points_no_estimate = avg_story_points * (total_stories - stories_with_estimates)
+        return story_points_for_estimated_stories + estimated_points_no_estimate
 
-    Returns:
-    - tuple: Mean predicted defects and mean predicted delivery weeks.
-    """
+    def simulate_event_occurrence(num_events, probability):
+        return np.random.binomial(1, probability, int(num_events))
 
-    # Determine which stories have estimates
-    has_estimate = np.random.rand(num_simulations, total_stories) < (stories_with_estimates / total_stories)
+    def simulate_impact(events_occurred, impact_multiplier, max_value=None):
+        impacts = events_occurred * impact_multiplier
+        if max_value:
+            impacts = np.clip(impacts, 0, max_value)
+        return impacts
 
-    # Determine which are fat stories
-    is_fat = np.random.rand(num_simulations, total_stories) < fat_story_percentage
+    total_initial_points = calculate_initial_story_points()
 
-    # Calculate story points based on whether they have estimates and if they are fat
-    story_points = np.where(has_estimate, average_story_points_for_estimated_stories,
-                            average_points_for_stories_wo_estimates)
-    story_points[is_fat] *= fat_story_multiplier
+    simulation_results = {
+        key: np.zeros(num_simulations) for key in simulations.keys()
+    }
+    simulation_results.update({'delivery_weeks': np.zeros(num_simulations), 'final_points': np.zeros(num_simulations)})
 
-    # Total up the story points for each simulation
-    total_story_points = story_points.sum(axis=1)
+    for i in range(num_simulations):
+        adjusted_points = total_initial_points
 
-    # Simulate disruptions
-    disruptions = np.random.rand(num_simulations) < disruption_probability
-    disruption_delays = np.where(disruptions, np.random.exponential(scale=average_disruption_delay), 0)
+        for impact_key, simulation_data in simulations.items():
+            event_count = total_initial_points if "points" in impact_key else total_stories
+            events = simulate_event_occurrence(event_count, simulation_data['probability'])
+            impact_points = np.sum(simulate_impact(events, simulation_data['impact']))
+            adjusted_points += impact_points
+            simulation_results[impact_key][i] = impact_points
 
-    # Calculate potential days of work for the given period of simulations
-    total_engineer_days = num_engineers * num_simulations
+        simulation_results['delivery_weeks'][i] = adjusted_points / burn_rate
+        simulation_results['final_points'][i] = adjusted_points
 
-    # Deducting planned days off
-    days_off_assigned = np.random.choice(total_engineer_days, planned_days_off, replace=False)
+    aggregated_data = {
+        'delivery_weeks': np.mean(simulation_results['delivery_weeks']),
+        'final_points': np.mean(simulation_results['final_points']),
+        'total_initial_points': total_initial_points,
+        'extrapolated_points': total_initial_points - story_points_for_estimated_stories
+    }
 
-    # Simulating unplanned days off
-    random_vals = np.random.rand(total_engineer_days)
-    unplanned_days_off = np.sum(random_vals < unplanned_off_probability)
+    return simulation_results, aggregated_data
 
-    # Adjust the total engineer-days and burn rate
-    adjusted_engineer_days = total_engineer_days - len(np.unique(days_off_assigned)) - unplanned_days_off
-    adjusted_burn_rate = (adjusted_engineer_days / total_engineer_days) * burn_rate
-
-    # Calculate defects for each simulation
-    defects = total_story_points * defect_points_per_story_point
-
-    # Calculate weeks required, incorporating both productivity and dependency delays
-    weeks_required = total_story_points / adjusted_burn_rate
-    dependency_delays = np.random.exponential(scale=dependency_delay_factor, size=num_simulations)
-    weeks_required += dependency_delays + disruption_delays
-
-    return defects.mean(), weeks_required.mean()
 
 
 def main():
-    # ======================
-    # Variables Specific to Each Release
-    # ======================
+    # Variables for the release
+    story_total = 633
+    story_estimated_count = 421
+    story_points_estimated_total = 1796
+    burn_rate = 320
+    engineer_count = 18
+    simulation_count = 10000
 
-    # Sprint Data
-    total_stories = 633
-    stories_with_estimates = 421
-    story_points_for_estimated_stories = 1796
-    points_for_stories_wo_estimates = 699
+    simulations = {
+        'simulate_estimation_errors': {
+            'probability': 0.3,
+            'impact': 0.3,
+            '__doc__': """
+            Represents the occurrence of estimation errors during the project's lifecycle.
 
-    # Story Characteristics
-    fat_story_multiplier = 2
-    fat_story_percentage = 0.0142
+            Parameters:
+            - probability: Likelihood of an estimation error for any given story. (0.3 means 30% chance).
+            - impact: Average percentage by which the initial estimate might be off (0.3 implies 30%).
+            """
+        },
 
-    # Productivity and Days Off
-    planned_days_off = 5  # total number of days off over the simulation
+        'simulate_rework': {
+            'probability': 0.11,
+            'impact': 0.5,
+            '__doc__': """
+            Represents scenarios where tasks need revisiting due to reasons like bugs, missed requirements, or feedback.
 
-    # ======================
-    # Variables Based on Historical Data
-    # ======================
+            Parameters:
+            - probability: Probability that rework will be required for a given story (0.11 or 11%).
+            - impact: Average percentage of the original story points added due to rework (0.5 or 50%).
+            """
+        },
 
-    # Productivity and Burn Rates
-    burn_rate = 320  # rolling or weighted average based on recent sprints
-    num_engineers = 18
-    unplanned_off_probability = 0.05  # derived from past data on unplanned offs
+        'simulate_fat_stories': {
+            'probability': 0.0142,
+            'impact': 3,
+            '__doc__': """
+            Simulates when some stories are larger than originally estimated ("fat" stories).
 
-    # Quality Metrics
-    defect_points_per_story_point = 0.05  # based on historical defect rates
+            Parameters:
+            - probability: Likelihood of encountering a fat story (0.0142 or 1.42%).
+            - impact: Average multiple by which the original story points might increase for a fat story (3 times).
+            """
+        },
 
-    # Dependencies
-    dependency_delay_factor = 0.5  # based on historical dependency delays
+        'simulate_unplanned_work': {
+            'probability': 0.16,
+            'impact': 2,
+            '__doc__': """
+            Represents unexpected tasks that emerge during the project.
 
-    # Disruption Parameters
-    disruption_probability = 0.1  # based on past occurrences of disruptions
-    average_disruption_delay = 0.5  # average delay due to disruptions historically
+            Parameters:
+            - probability: Chance of unplanned work emerging (0.16 or 16%).
+            - impact: Average multiple of story points added due to unplanned work (2 times the effort).
+            """
+        },
 
-    # Compute averages outside of the Monte Carlo function
-    average_story_points_for_estimated_stories = story_points_for_estimated_stories / stories_with_estimates
-    average_points_for_stories_wo_estimates = points_for_stories_wo_estimates / (total_stories - stories_with_estimates)
+        'simulate_defects': {
+            'probability': 0.10,
+            'impact': 1,
+            '__doc__': """
+            Simulates the occurrence of defects in the code that need fixing.
 
-    # Running the Monte Carlo simulation
-    num_simulations = 10000
-    mean_defects, mean_delivery_weeks = monte_carlo_simulation(
-        burn_rate, total_stories, stories_with_estimates, defect_points_per_story_point,
-        fat_story_percentage, average_story_points_for_estimated_stories,
-        average_points_for_stories_wo_estimates, dependency_delay_factor, fat_story_multiplier,
-        planned_days_off, num_engineers, unplanned_off_probability, disruption_probability,
-        average_disruption_delay, num_simulations)
+            Parameters:
+            - probability: Likelihood of a defect in a given story (0.10 or 10%).
+            - impact: Average story points added due to fixing defects (equivalent to a regular story).
+            """
+        },
 
-    print(f"Based on {num_simulations} simulations:")
-    print(f"Mean predicted defects: {mean_defects:.2f}")
-    print(f"Mean predicted delivery weeks: {mean_delivery_weeks:.2f}")
+        'simulate_dependencies': {
+            'probability': 0.3,
+            'impact': 1,
+            '__doc__': """
+            Represents scenarios where a story is dependent on another story causing delays.
 
+            Parameters:
+            - probability: Chance that a story has a dependency (0.3 or 30%).
+            - impact: Average story points added due to dependencies.
+            """
+        },
+
+        'simulate_blocked_stories': {
+            'probability': 0.1,
+            'impact': 1,
+            '__doc__': """
+            Simulates when a story cannot progress due to blockers.
+
+            Parameters:
+            - probability: Likelihood of a story getting blocked (0.1 or 10%).
+            - impact: Average story points added due to resolving blockers.
+            """
+        }
+    }
+
+    simulation_results, aggregated_data = monte_carlo_simulation(
+        burn_rate, story_total, story_estimated_count,
+        story_points_estimated_total, engineer_count, simulation_count, simulations)
+
+    # Printing simulation results
+    print("\nSimulation Results:")
+    for key, value in simulation_results.items():
+        print(f"Simulation {key.replace('_', ' ').capitalize()}: Mean = {np.mean(value):.2f}, Std = {np.std(value):.2f}")
+
+    # Print the aggregated data
+    print("\nAggregated Data:")
+    for key, value in aggregated_data.items():
+        print(f"{key.replace('_', ' ').capitalize()}: {value:.2f}")
 
 if __name__ == "__main__":
     main()
