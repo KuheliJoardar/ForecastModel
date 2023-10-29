@@ -1,12 +1,64 @@
 import numpy as np
 
-
 def calculate_initial_story_points(total_stories, stories_with_estimates, story_points_for_estimated_stories):
+    """
+    Calculate the total estimated story points for all stories, both estimated and unestimated.
+
+    The function first computes the average story points for the stories that have been estimated.
+    It then extrapolates this average to the unestimated stories and returns the total estimated
+    story points for all stories combined.
+
+    Parameters:
+    - total_stories (int): The total number of stories (both estimated and unestimated).
+    - stories_with_estimates (int): The number of stories that have been estimated.
+    - story_points_for_estimated_stories (float): The total story points for the stories that have been estimated.
+
+    Returns:
+    - float: The total estimated story points for all stories.
+
+    Example:
+    >>> calculate_initial_story_points(100, 50, 250)
+    500.0
+
+    Notes:
+    - Ensure that the stories_with_estimates is never greater than total_stories.
+    - The function assumes that the distribution of story points for unestimated stories is similar
+      to the distribution of story points for estimated stories.
+    """
     avg_story_points = story_points_for_estimated_stories / stories_with_estimates
     extrapolated_points = avg_story_points * (total_stories - stories_with_estimates)
     return story_points_for_estimated_stories + extrapolated_points
 
 def run_simulation(total_initial_points, simulations, burn_rate, total_stories):
+    """
+        Runs a simulation to estimate the total points considering different impacts and calculates the delivery weeks.
+
+        This function simulates the impact of different factors on the total story points. For each type of impact,
+        it uses a binomial distribution to determine whether a specific impact event occurs for a story.
+        If the event occurs, the story's points are adjusted based on the defined impact multiplier.
+        Finally, the function computes the number of delivery weeks required given the adjusted story points and a defined burn rate.
+
+        Parameters:
+        - total_initial_points (float): The initial total story points before any impact.
+        - simulations (dict): A dictionary where each key represents a type of impact, and the associated value is another dictionary with keys 'probability' (probability of the impact event occurring for a story) and 'impact' (multiplier for story points if the event occurs).
+        - burn_rate (float): The number of story points that can be delivered per week.
+        - total_stories (int): The total number of stories.
+
+        Returns:
+        - dict: A dictionary with keys representing different types of impacts and their corresponding total adjusted points, 'delivery_weeks' (estimated weeks for delivery) and 'final_points' (total adjusted story points after all impacts).
+
+        Example:
+        simulations_data = {
+            'type1': {'probability': 0.1, 'impact': 0.2},
+            'type2': {'probability': 0.05, 'impact': 0.5}
+        }
+        run_simulation(1000, simulations_data, 50, 100)
+        {'type1': ..., 'type2': ..., 'delivery_weeks': ..., 'final_points': ...}
+
+        Notes:
+        - The function assumes a binomial distribution for the occurrence of impact events for stories.
+        - Ensure the 'probability' values in simulations are between 0 and 1, and the 'impact' values are non-negative.
+        """
     avg_story_size = total_initial_points / total_stories
     simulation_results = {}
 
@@ -31,6 +83,36 @@ def run_simulation(total_initial_points, simulations, burn_rate, total_stories):
 
 def monte_carlo_simulation(burn_rate, total_stories, stories_with_estimates,
                            story_points_for_estimated_stories, num_simulations, simulations):
+    """
+        Conducts a Monte Carlo simulation to estimate delivery weeks and total points based on various impacts.
+
+        This function utilizes the Monte Carlo method to repeatedly run simulations and assess the impact of various factors on
+        the total story points and consequently, the delivery weeks. It aggregates the results to provide an average estimate.
+
+        Parameters:
+        - burn_rate (float): The number of story points that can be delivered per week.
+        - total_stories (int): The total number of stories.
+        - stories_with_estimates (int): The number of stories that have been estimated.
+        - story_points_for_estimated_stories (float): The total story points for stories that have been estimated.
+        - num_simulations (int): The number of simulations to run.
+        - simulations (dict): A dictionary where each key represents a type of impact, and the associated value is another dictionary with keys 'probability' (probability of the impact event occurring for a story) and 'impact' (multiplier for story points if the event occurs).
+
+        Returns:
+        - tuple: A tuple where the first element is a list containing the result of each simulation, and the second element is a dictionary aggregating the results (average 'delivery_weeks', 'final_points', 'total_initial_points' and 'extrapolated_points').
+
+        Example:
+        simulations_data = {
+            'type1': {'probability': 0.1, 'impact': 0.2},
+            'type2': {'probability': 0.05, 'impact': 0.5}
+        }
+        monte_carlo_simulation(50, 100, 50, 500, 1000, simulations_data)
+        ([...], {'delivery_weeks': ..., 'final_points': ..., 'total_initial_points': ..., 'extrapolated_points': ...})
+
+        Notes:
+        - The function leverages the Monte Carlo method which involves running the simulation multiple times to estimate the outcomes.
+        - Ensure the 'probability' values in simulations are between 0 and 1, and the 'impact' values are non-negative.
+        """
+
     total_initial_points = calculate_initial_story_points(
         total_stories, stories_with_estimates, story_points_for_estimated_stories)
 
