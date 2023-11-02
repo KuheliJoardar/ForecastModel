@@ -1,6 +1,10 @@
+import datetime
+import os
+from jira import JIRA
 import numpy as np
 
-def calculate_initial_story_points(total_stories, stories_with_estimates, story_points_for_estimated_stories):
+
+def calculate_initial_story_points(total_stories, stories_without_estimates, story_points_for_estimated_stories):
     """
     Calculate the total estimated story points for all stories, both estimated and unestimated.
 
@@ -17,7 +21,7 @@ def calculate_initial_story_points(total_stories, stories_with_estimates, story_
     - float: The total estimated story points for all stories.
 
     Example:
-    >>> calculate_initial_story_points(100, 50, 250)
+    calculate_initial_story_points(100, 50, 250)
     500.0
 
     Notes:
@@ -25,9 +29,10 @@ def calculate_initial_story_points(total_stories, stories_with_estimates, story_
     - The function assumes that the distribution of story points for unestimated stories is similar
       to the distribution of story points for estimated stories.
     """
-    avg_story_points = story_points_for_estimated_stories / stories_with_estimates
-    extrapolated_points = avg_story_points * (total_stories - stories_with_estimates)
+    avg_story_points = story_points_for_estimated_stories / total_stories
+    extrapolated_points = avg_story_points * stories_without_estimates
     return story_points_for_estimated_stories + extrapolated_points
+
 
 def run_simulation(total_initial_points, simulations, burn_rate, total_stories):
     """
@@ -81,8 +86,14 @@ def run_simulation(total_initial_points, simulations, burn_rate, total_stories):
     return simulation_results
 
 
-def monte_carlo_simulation(burn_rate, total_stories, stories_with_estimates,
-                           story_points_for_estimated_stories, num_simulations, simulations):
+def monte_carlo_simulation(
+        burn_rate,
+        total_stories,
+        stories_without_estimates,
+        story_points_for_estimated_stories,
+        num_simulations,
+        simulations
+):
     """
         Conducts a Monte Carlo simulation to estimate delivery weeks and total points based on various impacts.
 
@@ -114,7 +125,7 @@ def monte_carlo_simulation(burn_rate, total_stories, stories_with_estimates,
         """
 
     total_initial_points = calculate_initial_story_points(
-        total_stories, stories_with_estimates, story_points_for_estimated_stories)
+        total_stories, stories_without_estimates, story_points_for_estimated_stories)
 
     all_sim_results = [
         run_simulation(
@@ -135,9 +146,33 @@ def monte_carlo_simulation(burn_rate, total_stories, stories_with_estimates,
     return all_sim_results, aggregated_data
 
 
-def print_results(simulation_results, aggregated_data):
+def get_delivery_date(start_date, delivery_weeks):
+    """
+    Calculate the estimated delivery date in business days.
+
+    Parameters:
+    - start_date (str): The starting date in 'YYYY-MM-DD' format.
+    - delivery_weeks (float): The number of weeks to deliver.
+
+    Returns:
+    - str: Estimated delivery date in 'YYYY-MM-DD' format.
+    """
+    # Convert weeks to business days. Assuming 5 business days in a week.
+    business_days = int(delivery_weeks * 5)
+
+    # Calculate the delivery date
+    delivery_date = np.busday_offset(start_date, business_days, roll='forward')
+
+    return str(delivery_date)
+
+
+def print_results(start_date, simulation_results, aggregated_data):
     print("\nSimulation Results:")
-    for key in simulation_results[0]:
+
+    # Calculate mean impacts and sort keys by these values in descending order
+    sorted_keys = sorted(simulation_results[0], key=lambda k: -np.mean([sim[k] for sim in simulation_results]))
+
+    for key in sorted_keys:
         values = [sim[key] for sim in simulation_results]
         print(
             f"Simulation {key.replace('_', ' ').capitalize()}: Mean = {np.mean(values):.2f}, Std = {np.std(values):.2f}")
@@ -146,16 +181,118 @@ def print_results(simulation_results, aggregated_data):
     for key, value in aggregated_data.items():
         print(f"{key.replace('_', ' ').capitalize()}: {value:.2f}")
 
+    print(f"Delivery date {get_delivery_date(start_date, aggregated_data['delivery_weeks'])}")
+
+
+def bottleneck_probability(num_engineers, num_stories):
+    # Calculate the average stories per engineer
+    avg_stories_per_engineer = num_stories // num_engineers
+
+    # Calculate the number of stories that would be evenly distributed without causing a bottleneck
+    non_bottleneck_stories = avg_stories_per_engineer * num_engineers
+
+    # Calculate the number of stories causing bottlenecks
+    bottleneck_stories = num_stories - non_bottleneck_stories
+
+    # Probability that a randomly chosen story will be a bottleneck-causing story
+    probability = bottleneck_stories / num_stories
+
+    return probability
+
+
+def fetch_and_analyze_stories(jira_url, jql_query):
+    api_key = os.environ.get('JIRA_ACCESS_TOKEN')
+    if not api_key:
+        raise ValueError("JIRA_ACCESS_TOKEN environment variable not set.")
+
+    user_name = os.environ.get('JIRA_USER_NAME')
+    if not api_key:
+        raise ValueError("JIRA_USER_NAME environment variable not set.")
+
+    options = {
+        "server": jira_url
+    }
+
+    jira = JIRA(options, basic_auth=(user_name, api_key))
+
+    # Fetch issues using the provided JQL query
+    issues = jira.search_issues(jql_query, maxResults=1000)  # Adjust maxResults as needed
+
+    # Analyze the issues. For the sake of this example, I'm only counting stories.
+    # Extend this section as needed based on the metrics you need to extract.
+
+    story_total = len(issues)
+    story_points_estimated_total = sum([issue.fields.customfield_10026 for issue in issues if issue.fields.customfield_10026])
+    stories_without_estimates = sum(1 for issue in issues if not getattr(issue.fields, 'customfield_10026', None))
+
+    # Return analysis results
+    return {
+        'story_total': story_total,
+        'story_points_estimated_total': story_points_estimated_total,
+        'stories_without_estimates':stories_without_estimates
+    }
+
+
+def construct_jql_query(project, status_not_in, component_not_in, fix_version_in, sprint=None):
+    """
+    Constructs a JQL query based on the provided parameters.
+
+    Args:
+        project (str): Project name in JIRA.
+        status_not_in (list): List of statuses to exclude.
+        component_not_in (list): List of components to exclude.
+        fix_version_in (list): List of fix versions to include.
+        sprint (int, optional): Sprint number. Defaults to None.
+
+    Returns:
+        str: JQL query string.
+    """
+    # Constructing the base JQL
+    jql = f'project = "{project}"'
+
+    # Adding status exclusions
+    status_exclusions = ', '.join([f'"{status}"' for status in status_not_in])
+    jql += f' AND status not in ({status_exclusions})'
+
+    # Adding component exclusions
+    component_exclusions = ', '.join([f'"{component}"' for component in component_not_in])
+    jql += f' AND (component not in ({component_exclusions}) OR component is EMPTY)'
+
+    # Adding fix versions inclusions
+    fix_versions = ', '.join([f'"{version}"' for version in fix_version_in])
+    jql += f' AND fixVersion in ({fix_versions})'
+
+    # Adding sprint filter if provided
+    if sprint:
+        jql += f' AND Sprint = {sprint}'
+
+    return jql
+
 def main():
-    # Variables for the release
-    story_total = 633
-    story_estimated_count = 421
-    story_points_estimated_total = 1796
-    burn_rate = 320
+
+    jql_query = construct_jql_query(
+        project="Layr Platform",
+        status_not_in=["Done", "Abandoned", "Ready for Production", "Verify"],
+        component_not_in=["Parent"],
+        fix_version_in=["Alpha - 1.4.0"],
+    )
+
+    jira_data = fetch_and_analyze_stories(
+        jira_url=r'https://teamlayr.atlassian.net/',
+        jql_query=jql_query
+    )
+
+    story_total = jira_data['story_total']
+    stories_without_estimates = jira_data['stories_without_estimates']
+    story_points_estimated_total = jira_data['story_points_estimated_total']
+    burn_rate = 280
+    num_engineers = 18
     simulation_count = 10000
 
+    probability_of_bottleneck = bottleneck_probability(num_engineers, story_total)
+
     simulations = {
-        'simulate_estimation_errors': {
+        'estimation_errors': {
             'probability': 0.2,
             'impact': 0.3,
             'description': """
@@ -168,9 +305,23 @@ def main():
             """
         },
 
-        'simulate_rework': {
+        'discovered_scope': {
+            'probability': 0.65,
+            'impact': 1,
+            'description': """
+        Represents the occurrence of additional engineering scope in the development of a story.
+
+        Parameters:
+        - probability: Liklihood that while working on a story we discover more engineering scope.
+        - impact: The average number of stories created when engineering scope is discovered
+        - Derived from Jira identifying issues created after the start of the release
+        """
+        },
+
+
+        'rework': {
             'probability': 0.1059,
-            'impact': 0.5,
+            'impact': 0.6,
             'description': """
             Represents scenarios where tasks need revisiting due to reasons like bugs, missed requirements, or feedback.
 
@@ -181,7 +332,20 @@ def main():
             """
         },
 
-        'simulate_fat_stories': {
+        'refactor': {
+            'probability': 0.1641,
+            'impact': 0.6,
+            'description': """
+        Represents scenarios where tasks lead to refactoring to clear technical debt.
+
+        Parameters:
+        - probability: Probability that refactoring will be required for a given story.
+        - impact: Average percentage of the original story points added due to refactoring.
+        - Derived from LinearB using the rework metric
+        """
+        },
+
+        'fat_stories': {
             'probability': 0.0142,
             'impact': 3.0,
             'description': """
@@ -194,7 +358,7 @@ def main():
             """
         },
 
-        'simulate_unplanned_work': {
+        'unplanned_work': {
             'probability': 0.16,
             'impact': 2.0,
             'description': """
@@ -207,7 +371,7 @@ def main():
             """
         },
 
-        'simulate_defects': {
+        'defects': {
             'probability': 0.07,
             'impact': 1.0,
             'description': """
@@ -220,7 +384,7 @@ def main():
             """
         },
 
-        'simulate_dependencies': {
+        'dependencies': {
             'probability': 0.1,
             'impact': 1.0,
             'description': """
@@ -233,8 +397,60 @@ def main():
             """
         },
 
-        'simulate_blocked_stories': {
-            'probability': 0.1,
+        'bottlenecks': {
+            'probability': probability_of_bottleneck,
+            'impact': 1.0,
+            'description': """
+        Represents scenarios where a number of stories are dependent on one person - a bottleneck.
+
+        Parameters:
+        - probability: Chance that one engineer is assigned many stories forcing serial development.
+        - impact: Average story points added due to the bottleneck.
+        - Derived from Jira by count the stories that the same engineer assigned
+        """
+        },
+
+        'automated_testing': {
+            'probability': 0.85,
+            'impact': 1,  # This is a mix of automated versus manual work
+            'description': """
+         Represents scenarios where a story may require automated testing work
+
+         Parameters:
+         - probability: Chance that a story will require automated testing.
+         - impact: Average story points added due to dependencies.
+         - Derived from Jira by looking at stories that have a automated testing label
+         """
+        },
+
+        'fix_broken_test': {
+            'probability': 0.05,
+            'impact': 0.7,  # This is a mix of automated versus manual work
+            'description': """
+         Represents scenarios where a story breaks an existing test
+    
+         Parameters:
+         - probability: Chance that a story will break an existing test
+         - impact: Average amount of work required to fix the test
+         - Derived from Jira by looking at stories that have a automated testing label
+         """
+        },
+
+        'manual_testing': {
+            'probability': 0.15,
+            'impact': 0.25,  # This is a mix of automated versus manual work
+            'description': """
+         Represents scenarios where a story may require quality engineering work
+    
+         Parameters:
+         - probability: Chance that a story will require manual testing.
+         - impact: Average story points added due to manual testing.
+         - Derived from Jira by looking at stories that have a manual testing label
+         """
+        },
+
+        'blocked_stories': {
+            'probability': 0.02,
             'impact': 1.0,
             'description': """
             Simulates when a story cannot progress due to blockers.
@@ -244,14 +460,28 @@ def main():
             - impact: Average story points added due to resolving blockers.
             - Derived from Jira by looking at the number of blocked points on average 
             """
+        },
+
+        'merge_issues': {
+            'probability': 0.4,
+            'impact': 0.5,
+            'description': """
+        Simulates when a story cannot progress due to blockers.
+
+        Parameters:
+        - probability: Likelihood of a story getting blocked (0.1 or 10%).
+        - impact: Average story points added due to resolving blockers.
+        - Derived from Jira by looking at the number of blocked points on average 
+        """
         }
     }
 
     sim_results, agg_data = monte_carlo_simulation(
-        burn_rate, story_total, story_estimated_count,
+        burn_rate, story_total, stories_without_estimates,
         story_points_estimated_total, simulation_count, simulations)
 
-    print_results(sim_results, agg_data)
+    print_results(datetime.date.today(), sim_results, agg_data)
+
 
 if __name__ == "__main__":
     main()
