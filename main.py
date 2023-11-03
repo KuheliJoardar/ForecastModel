@@ -1,5 +1,7 @@
-import datetime
 import os
+from datetime import datetime, timedelta
+from collections import defaultdict
+
 from jira import JIRA
 import numpy as np
 
@@ -138,38 +140,26 @@ def monte_carlo_simulation(
 
     aggregated_data = {
         'delivery_weeks': np.mean([sim['delivery_weeks'] for sim in all_sim_results]),
-        'final_points': np.mean([sim['final_points'] for sim in all_sim_results]),
+        'total_stories': total_stories,
         'total_initial_points': total_initial_points,
-        'extrapolated_points': total_initial_points - story_points_for_estimated_stories
+        'extrapolated_points': total_initial_points - story_points_for_estimated_stories,
+        'final_points': np.mean([sim['final_points'] for sim in all_sim_results])
     }
 
     return all_sim_results, aggregated_data
 
 
 def get_delivery_date(start_date, delivery_weeks):
-    """
-    Calculate the estimated delivery date in business days.
-
-    Parameters:
-    - start_date (str): The starting date in 'YYYY-MM-DD' format.
-    - delivery_weeks (float): The number of weeks to deliver.
-
-    Returns:
-    - str: Estimated delivery date in 'YYYY-MM-DD' format.
-    """
-    # Convert weeks to business days. Assuming 5 business days in a week.
-    business_days = int(delivery_weeks * 5)
-
-    # Calculate the delivery date
+    business_days = delivery_weeks * 5
     delivery_date = np.busday_offset(start_date, business_days, roll='forward')
-
     return str(delivery_date)
 
 
-def print_results(start_date, simulation_results, aggregated_data):
-    print("\nSimulation Results:")
-
-    # Calculate mean impacts and sort keys by these values in descending order
+def print_results(version_name, start_date, end_date, simulation_results, aggregated_data):
+    print('---------------------------------------------------')
+    print(version_name)
+    print('---------------------------------------------------')
+    print("Simulation Results:")
     sorted_keys = sorted(simulation_results[0], key=lambda k: -np.mean([sim[k] for sim in simulation_results]))
 
     for key in sorted_keys:
@@ -181,115 +171,119 @@ def print_results(start_date, simulation_results, aggregated_data):
     for key, value in aggregated_data.items():
         print(f"{key.replace('_', ' ').capitalize()}: {value:.2f}")
 
-    print(f"Delivery date {get_delivery_date(start_date, aggregated_data['delivery_weeks'])}")
+    print(f"Start date: {start_date}\nDelivery date: {end_date}")
 
 
-def bottleneck_probability(num_engineers, num_stories):
-    # Calculate the average stories per engineer
-    avg_stories_per_engineer = num_stories // num_engineers
+def calculate_bottleneck_probability(issues_list):
+    assignee_distribution = defaultdict(int)
+    assignee_story_points = defaultdict(int)
 
-    # Calculate the number of stories that would be evenly distributed without causing a bottleneck
-    non_bottleneck_stories = avg_stories_per_engineer * num_engineers
+    for issue in issues_list:
+        if getattr(issue.fields.assignee, 'emailAddress', None) is not None:
+            assignee_distribution[issue.fields.assignee.emailAddress] += 1
+            assignee_story_points[issue.fields.assignee.emailAddress] += issue.fields.customfield_10026
 
-    # Calculate the number of stories causing bottlenecks
-    bottleneck_stories = num_stories - non_bottleneck_stories
+    task_counts = list(assignee_distribution.values())
+    variance = np.var(task_counts)
 
-    # Probability that a randomly chosen story will be a bottleneck-causing story
-    probability = bottleneck_stories / num_stories
+    max_variance = 500
+    probability = min(1, (variance / max_variance))
 
-    return probability
+    effective_story_points = {
+        engineer: assignee_distribution[engineer] * points for engineer, points in assignee_story_points.items()
+    }
+    average_effective_story_points = sum(effective_story_points.values()) / len(effective_story_points)
+    relative_impacts = [abs(points - average_effective_story_points) for points in effective_story_points.values()]
+    average_impact = sum(relative_impacts) / len(relative_impacts)
+
+    all_story_points = [issue.fields.customfield_10026 for issue in issues_list]
+    average_issue_size = sum(all_story_points) / len(all_story_points)
+    relative_impact = average_impact / average_issue_size
+
+    return probability, relative_impact
+
+
+def format_date(date_string):
+    date_format = '%Y-%m-%d'
+    try:
+        return datetime.strptime(date_string, date_format).strftime(date_format)
+    except (TypeError, ValueError):
+        return None
+
+
+def get_releases_from_jira(jira_url, project_key):
+    api_key = os.environ.get('JIRA_ACCESS_TOKEN')
+    user_name = os.environ.get('JIRA_USER_NAME')
+
+    if not api_key or not user_name:
+        raise ValueError("Required environment variables not set.")
+
+    options = {"server": jira_url}
+    jira = JIRA(options, basic_auth=(user_name, api_key))
+
+    versions = jira.project_versions(project_key)
+    releases = []
+
+    for version in versions:
+        release_info = {
+            'Name': version.name,
+            'Status': True if version.released else False,
+            'Start Date': format_date(getattr(version, 'startDate', None)),
+            'Release Date': format_date(getattr(version, 'releaseDate', None)) if version.released else None
+        }
+        releases.append(release_info)
+
+    return releases
 
 
 def fetch_and_analyze_stories(jira_url, jql_query):
     api_key = os.environ.get('JIRA_ACCESS_TOKEN')
-    if not api_key:
-        raise ValueError("JIRA_ACCESS_TOKEN environment variable not set.")
-
     user_name = os.environ.get('JIRA_USER_NAME')
-    if not api_key:
-        raise ValueError("JIRA_USER_NAME environment variable not set.")
 
-    options = {
-        "server": jira_url
-    }
+    if not api_key or not user_name:
+        raise ValueError("Required environment variables not set.")
 
+    options = {"server": jira_url}
     jira = JIRA(options, basic_auth=(user_name, api_key))
-
-    # Fetch issues using the provided JQL query
-    issues = jira.search_issues(jql_query, maxResults=1000)  # Adjust maxResults as needed
-
-    # Analyze the issues. For the sake of this example, I'm only counting stories.
-    # Extend this section as needed based on the metrics you need to extract.
+    issues = jira.search_issues(jql_query, maxResults=1000)
 
     story_total = len(issues)
-    story_points_estimated_total = sum([issue.fields.customfield_10026 for issue in issues if issue.fields.customfield_10026])
+    story_points_estimated_total = sum(
+        [issue.fields.customfield_10026 for issue in issues if issue.fields.customfield_10026])
     stories_without_estimates = sum(1 for issue in issues if not getattr(issue.fields, 'customfield_10026', None))
+    bottleneck_probability = calculate_bottleneck_probability(issues)
 
-    # Return analysis results
     return {
         'story_total': story_total,
         'story_points_estimated_total': story_points_estimated_total,
-        'stories_without_estimates':stories_without_estimates
+        'stories_without_estimates': stories_without_estimates,
+        'bottleneck_probability': bottleneck_probability
     }
 
 
 def construct_jql_query(project, status_not_in, component_not_in, fix_version_in, sprint=None):
-    """
-    Constructs a JQL query based on the provided parameters.
-
-    Args:
-        project (str): Project name in JIRA.
-        status_not_in (list): List of statuses to exclude.
-        component_not_in (list): List of components to exclude.
-        fix_version_in (list): List of fix versions to include.
-        sprint (int, optional): Sprint number. Defaults to None.
-
-    Returns:
-        str: JQL query string.
-    """
-    # Constructing the base JQL
     jql = f'project = "{project}"'
-
-    # Adding status exclusions
     status_exclusions = ', '.join([f'"{status}"' for status in status_not_in])
     jql += f' AND status not in ({status_exclusions})'
 
-    # Adding component exclusions
     component_exclusions = ', '.join([f'"{component}"' for component in component_not_in])
     jql += f' AND (component not in ({component_exclusions}) OR component is EMPTY)'
 
-    # Adding fix versions inclusions
     fix_versions = ', '.join([f'"{version}"' for version in fix_version_in])
     jql += f' AND fixVersion in ({fix_versions})'
 
-    # Adding sprint filter if provided
     if sprint:
         jql += f' AND Sprint = {sprint}'
 
     return jql
 
+
 def main():
+    jira_url = r'https://teamlayr.atlassian.net/'
+    project = r'Layr Platform'
 
-    jql_query = construct_jql_query(
-        project="Layr Platform",
-        status_not_in=["Done", "Abandoned", "Ready for Production", "Verify"],
-        component_not_in=["Parent"],
-        fix_version_in=["Alpha - 1.4.0"],
-    )
-
-    jira_data = fetch_and_analyze_stories(
-        jira_url=r'https://teamlayr.atlassian.net/',
-        jql_query=jql_query
-    )
-
-    story_total = jira_data['story_total']
-    stories_without_estimates = jira_data['stories_without_estimates']
-    story_points_estimated_total = jira_data['story_points_estimated_total']
-    burn_rate = 280
-    num_engineers = 18
+    burn_rate = 320
     simulation_count = 10000
-
-    probability_of_bottleneck = bottleneck_probability(num_engineers, story_total)
 
     simulations = {
         'estimation_errors': {
@@ -305,7 +299,7 @@ def main():
             """
         },
 
-        'discovered_scope': {
+        'scope_creep': {
             'probability': 0.65,
             'impact': 1,
             'description': """
@@ -317,7 +311,6 @@ def main():
         - Derived from Jira identifying issues created after the start of the release
         """
         },
-
 
         'rework': {
             'probability': 0.1059,
@@ -384,6 +377,19 @@ def main():
             """
         },
 
+        'bottlenecks':{
+            'probability': 0,
+            'impact': 0,
+            'description': """
+                        Represents scenarios where a number of stories are dependent on one person - a bottleneck.
+
+                        Parameters:
+                        - probability: Chance that one engineer is assigned many stories forcing serial development.
+                        - impact: Average story points added due to the bottleneck.
+                        - Derived from Jira by count the stories that the same engineer assigned
+                        """
+        },
+
         'dependencies': {
             'probability': 0.1,
             'impact': 1.0,
@@ -395,19 +401,6 @@ def main():
             - impact: Average story points added due to dependencies.
             - Derived from Jira by count the stories that have dependencies on them
             """
-        },
-
-        'bottlenecks': {
-            'probability': probability_of_bottleneck,
-            'impact': 1.0,
-            'description': """
-        Represents scenarios where a number of stories are dependent on one person - a bottleneck.
-
-        Parameters:
-        - probability: Chance that one engineer is assigned many stories forcing serial development.
-        - impact: Average story points added due to the bottleneck.
-        - Derived from Jira by count the stories that the same engineer assigned
-        """
         },
 
         'automated_testing': {
@@ -428,7 +421,7 @@ def main():
             'impact': 0.7,  # This is a mix of automated versus manual work
             'description': """
          Represents scenarios where a story breaks an existing test
-    
+
          Parameters:
          - probability: Chance that a story will break an existing test
          - impact: Average amount of work required to fix the test
@@ -441,7 +434,7 @@ def main():
             'impact': 0.25,  # This is a mix of automated versus manual work
             'description': """
          Represents scenarios where a story may require quality engineering work
-    
+
          Parameters:
          - probability: Chance that a story will require manual testing.
          - impact: Average story points added due to manual testing.
@@ -476,11 +469,42 @@ def main():
         }
     }
 
-    sim_results, agg_data = monte_carlo_simulation(
-        burn_rate, story_total, stories_without_estimates,
-        story_points_estimated_total, simulation_count, simulations)
+    releases = get_releases_from_jira(jira_url, "LP")
 
-    print_results(datetime.date.today(), sim_results, agg_data)
+    unreleased = [r for r in sorted(releases,key=lambda r: r['Name']) if not r['Status']]
+    start_date = unreleased[0]['Start Date']
+    current = True
+    for release in unreleased:
+        jql_query = construct_jql_query(
+            project=project,
+            status_not_in=["Done", "Abandoned", "Ready for Production", "Verify"],
+            component_not_in=["Parent"],
+            fix_version_in=[release['Name']]  # use current release version
+        )
+
+        jira_data = fetch_and_analyze_stories(
+            jira_url=jira_url,
+            jql_query=jql_query
+        )
+
+        story_total = jira_data['story_total']
+        stories_without_estimates = jira_data['stories_without_estimates']
+        story_points_estimated_total = jira_data['story_points_estimated_total']
+        bottleneck_probability, bottleneck_impact = jira_data['bottleneck_probability']
+        simulations['bottlenecks']['probability'] = bottleneck_probability
+        simulations['bottlenecks']['impact'] = bottleneck_impact
+
+        sim_results, agg_data = monte_carlo_simulation(
+            burn_rate, story_total, stories_without_estimates,
+            story_points_estimated_total, simulation_count, simulations)
+
+        if current:
+            forecasted_end_date = get_delivery_date(datetime.today().date(), agg_data['delivery_weeks'])
+            current = False
+        else:
+            forecasted_end_date = get_delivery_date(start_date, agg_data['delivery_weeks'])
+        print_results(release['Name'], start_date, forecasted_end_date, sim_results, agg_data)
+        start_date = datetime.strptime(forecasted_end_date, "%Y-%m-%d").date() + timedelta(days=1)  # Next release starts the day after previous one ends
 
 
 if __name__ == "__main__":
