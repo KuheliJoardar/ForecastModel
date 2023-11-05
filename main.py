@@ -156,7 +156,7 @@ def get_delivery_date(start_date, delivery_weeks):
 
 
 def print_results(version_name, start_date, end_date, simulation_results, aggregated_data):
-    print('---------------------------------------------------')
+    print('\n---------------------------------------------------')
     print(version_name)
     print('---------------------------------------------------')
     print("Simulation Results:")
@@ -165,13 +165,13 @@ def print_results(version_name, start_date, end_date, simulation_results, aggreg
     for key in sorted_keys:
         values = [sim[key] for sim in simulation_results]
         print(
-            f"Simulation {key.replace('_', ' ').capitalize()}: Mean = {np.mean(values):.2f}, Std = {np.std(values):.2f}")
+            f"\t{key.replace('_', ' ').capitalize()}: Mean = {np.mean(values):.2f}, Std = {np.std(values):.2f}")
 
     print("\nAggregated Data:")
     for key, value in aggregated_data.items():
-        print(f"{key.replace('_', ' ').capitalize()}: {value:.2f}")
+        print(f"\t{key.replace('_', ' ').capitalize()}: {value:.2f}")
 
-    print(f"Start date: {start_date}\nDelivery date: {end_date}")
+    print(f"\nTimeline\n\tStart date: {start_date}\n\tDelivery date: {end_date}")
 
 
 def calculate_bottleneck_probability(issues_list):
