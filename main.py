@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 from collections import defaultdict
 
 from jira import JIRA
-import numpy as np
+import numpy as np 
 
 
 def calculate_initial_story_points(total_stories, stories_without_estimates, story_points_for_estimated_stories):
